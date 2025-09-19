@@ -7,33 +7,35 @@ import json
 import logging
 from pathlib import Path
 import re
-import sys
 import urllib.parse as urlparse
 
 import bs4
 import langdetect
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import (
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 import requests
 from requests_cache import CachedSession
 
 READABILITY_JS_COMMIT = "8e8ec27cd2013940bc6f3cc609de10e35a1d9d86"
-READABILITY_JS_URL = f"https://raw.githubusercontent.com/mozilla/readability/{READABILITY_JS_COMMIT}"
+READABILITY_JS_URL = (
+    f"https://raw.githubusercontent.com/mozilla/readability/{READABILITY_JS_COMMIT}"
+)
 REQUESTS_TIMEOUT = 10
 
 
 def get_readability_js():
     session = CachedSession("py_request_cache", backend="filesystem", use_temp=True)
     js_code = []
-
     res = session.get(f"{READABILITY_JS_URL}/Readability.js", timeout=REQUESTS_TIMEOUT)
     res.raise_for_status()
     js_code.append(res.text)
-    js_code.append(res.text)
-
-    res = session.get(f"{READABILITY_JS_URL}/Readability-readerable.js", timeout=REQUESTS_TIMEOUT)
+    res = session.get(
+        f"{READABILITY_JS_URL}/Readability-readerable.js", timeout=REQUESTS_TIMEOUT
+    )
     res.raise_for_status()
     js_code.append(res.text)
-
     return "\n".join(js_code)
 
 
@@ -45,53 +47,53 @@ def url_arg_handler(url):
         parsed_path = Path(url).absolute()
 
         if not parsed_path.is_file():
-            logging.error("File %r not found", url)
-            return None
+            raise FileNotFoundError(f"File {url} not found")
 
         return parsed_path.as_uri()
 
     # Handle Google Docs URLs
-    if (parsed_url.hostname == "docs.google.com"
-            and not parsed_url.path.endswith("/pub")
-            and (m := re.match(r"/document/d/(1[a-zA-Z0-9_-]{42}[AEIMQUYcgkosw048])", parsed_url.path))):
+    if (
+        parsed_url.hostname == "docs.google.com"
+        and not parsed_url.path.endswith("/pub")
+        and (
+            m := re.match(
+                r"/document/d/(1[a-zA-Z0-9_-]{42}[AEIMQUYcgkosw048])", parsed_url.path
+            )
+        )
+    ):
         logging.info("Exporting HTML from Google Docs URL...")
 
         export_url = f"https://docs.google.com/feeds/download/documents/export/Export?id={m[1]}&exportFormat=html"
 
-        req = requests.get(export_url)
+        req = requests.get(export_url, timeout=REQUESTS_TIMEOUT)
         req.raise_for_status()
 
         base64_url = "data:text/html;base64," + base64.b64encode(req.content).decode()
-
+        req.close()
         return base64_url
 
-    # Handle other URLs: test with a HEAD request before starting browser
-    logging.info("Testing URL %r with HEAD request", url)
-
+    # Perform a HEAD preflight to weed out obviously unreachable endpoints before
+    # launching the browser (difference #6 retained). We allow auth and method
+    # errors (401/403/405/501) to pass through since content might still render.
     try:
-        requests.head(url, timeout=REQUESTS_TIMEOUT)
+        resp = requests.head(url, timeout=REQUESTS_TIMEOUT, allow_redirects=True)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-        logging.error("Failed to connect to %r", url)
-        logging.error("Error message: %s", e)
-        return None
-    else:
-        return url
+        raise RuntimeError(f"Preflight HEAD request failed for {url}: {e}") from e
+    status = resp.status_code
+    if status >= 400 and status not in {401, 403, 405, 501}:
+        raise RuntimeError(f"Preflight HEAD request for {url} returned HTTP {status}")
+    return url
 
 
-def main():
-    logging.basicConfig(format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
+def main(url, output, no_readability_js=False):
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
+    )
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("url", help="Input URL or path")
-    parser.add_argument("output", help="Output dir")
-    parser.add_argument("--no-readability-js", action="store_true", help="Disable readability.js")
-    args = parser.parse_args()
-
+    args = argparse.Namespace(
+        url=url, output=output, no_readability_js=no_readability_js
+    )
     access_url = url_arg_handler(args.url)
-
-    if access_url is None:
-        logging.error("URL failed pre-tests. Exiting...")
-        sys.exit(-1)
 
     firefox_configs = {
         # Bypass CSP so we can always inject scripts
@@ -110,18 +112,21 @@ def main():
     }
 
     with sync_playwright() as p:
-        # Firefox generates simpler accessibility tree than chromium
-        # Tested on Debian's firefox-esr 91.5.0esr-1~deb11u1
-        browser = p.firefox.launch(firefox_user_prefs=firefox_configs)
+        # Firefox generates simpler accessibility tree than chromium (upstream behavior)
+        browser = p.firefox.launch(firefox_user_prefs=firefox_configs, headless=True)
         context = browser.new_context(bypass_csp=True)
+        context.set_default_timeout(REQUESTS_TIMEOUT * 1000)
 
         def error_cleanup(msg):
             logging.error(msg)
-            context.close()
-            browser.close()
-            sys.exit(-1)
+            try:
+                context.close()
+                browser.close()
+            finally:
+                raise RuntimeError(f"html_crawler failure: {msg}")
 
         page = context.new_page()
+        page.set_default_timeout(REQUESTS_TIMEOUT * 1000)
         page.set_viewport_size({"width": 1080, "height": 1920})
         logging.info("Navigating to %r", access_url)
 
@@ -129,11 +134,13 @@ def main():
         url_status = dict()
         navigated_urls = []
         page.on("response", lambda r: url_status.update({r.url: r.status}))
-        page.on("framenavigated", lambda f: f.parent_frame is None and navigated_urls.append(f.url))
-
-        page.goto(access_url)
+        page.on(
+            "framenavigated",
+            lambda f: f.parent_frame is None and navigated_urls.append(f.url),
+        )
 
         try:
+            page.goto(access_url)
             page.wait_for_load_state("networkidle")
         except PlaywrightTimeoutError:
             logging.warning("Cannot reach networkidle but will continue")
@@ -143,14 +150,18 @@ def main():
             if (status_code := url_status.get(url, 0)) >= 400:
                 error_cleanup(f"Got HTTP error {status_code}")
 
-        # Apply readability.js
         page.evaluate("window.stop()")
-        page.add_script_tag(content=get_readability_js())
-        readability_info = page.evaluate(r"""(no_readability_js) => {
+        if not args.no_readability_js:
+            page.add_script_tag(content=get_readability_js())
+        readability_info = page.evaluate(
+            r"""(no_readability_js) => {
             window.stop();
 
             const documentClone = document.cloneNode(true);
             const article = new Readability(documentClone).parse();
+            if (!article) {
+                throw new Error("Readability.js failed to parse the document");
+            }
             article.applied = false;
 
             document.querySelectorAll('[aria-hidden=true]').forEach((x) => x.setAttribute("aria-hidden", false));
@@ -168,11 +179,13 @@ def main():
                 elem.remove();
 
             return article;
-        }""", [args.no_readability_js])
+        }""",
+            [args.no_readability_js],
+        )
         cleaned_html = page.content()
 
         # Check language
-        soup = bs4.BeautifulSoup(cleaned_html, 'lxml')
+        soup = bs4.BeautifulSoup(cleaned_html, "lxml")
         soup_text = soup.body.text if soup.body else ""
 
         try:
@@ -192,7 +205,9 @@ def main():
         output_dir = Path(args.output)
         output_dir.mkdir(exist_ok=True)
 
-        with open(output_dir / "accessibility_tree.json", "w", encoding="utf-8") as fout:
+        with open(
+            output_dir / "accessibility_tree.json", "w", encoding="utf-8"
+        ) as fout:
             json.dump(snapshot, fout)
 
         with open(output_dir / "cleaned.html", "w", encoding="utf-8") as fout:
@@ -207,4 +222,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("url")
+    parser.add_argument("output_dir")
+    parser.add_argument(
+        "--no-readability-js",
+        action="store_true",
+        help="Disable Readability.js content extraction",
+    )
+    cli_args = parser.parse_args()
+    main(
+        cli_args.url, cli_args.output_dir, no_readability_js=cli_args.no_readability_js
+    )
