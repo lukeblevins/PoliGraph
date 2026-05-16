@@ -159,6 +159,6 @@ figs/
 profile*.bin
 
 # Extra data, distributed separately
-*/extra-data/
+*/extra-data/*
 
 .claude/
