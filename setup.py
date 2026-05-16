@@ -31,5 +31,6 @@ setup(
         "beautifulsoup4",
         "markdown",
         "pymupdf4llm",
+        "pytest"
     ],
 )
