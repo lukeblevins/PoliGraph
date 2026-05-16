@@ -8,6 +8,11 @@ setup(
     author='UCI Networking Group',
     include_package_data=True,
     packages=['poligrapher', 'poligrapher.annotators', 'poligrapher.scripts'],
+    entry_points={
+        'console_scripts': [
+            'poligrapher-fetch-data=poligrapher.fetch_data:main',
+        ],
+    },
     install_requires=[
         "spacy",
         "anytree",
