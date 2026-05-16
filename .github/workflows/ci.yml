@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download extra data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download extra-data-v1 \
+            --repo lukeblevins/PoliGraph \
+            --pattern "poligrapher-extra-data.tar.gz" \
+            --dir /tmp
+          tar -xzf /tmp/poligrapher-extra-data.tar.gz -C poligrapher/extra-data
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" 2>/dev/null || pip install -e .
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
