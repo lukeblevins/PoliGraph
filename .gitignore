@@ -158,7 +158,4 @@ figs/
 # cProfile data
 profile*.bin
 
-# Extra data, distributed separately
-*/extra-data/*
-
 .claude/
