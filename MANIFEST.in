@@ -1,1 +1,2 @@
 recursive-include poligrapher/extra-data/ *
+include poligrapher/verb_patterns.yml
