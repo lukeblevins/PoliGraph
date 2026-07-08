@@ -22,7 +22,26 @@ READABILITY_JS_COMMIT = "8e8ec27cd2013940bc6f3cc609de10e35a1d9d86"
 READABILITY_JS_URL = (
     f"https://raw.githubusercontent.com/mozilla/readability/{READABILITY_JS_COMMIT}"
 )
-REQUESTS_TIMEOUT = 10
+REQUESTS_TIMEOUT = 20
+# Browser navigation is slower than a plain request (JS, subresources) and some
+# corporate CDNs / archived pages are large, so give the page its own budget.
+NAV_TIMEOUT = 45
+
+# Present as a real desktop Chrome. Obvious bot User-Agents get blocked by
+# corporate WAFs, so both the preflight and the crawl browser use these.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+BROWSER_HEADERS = {
+    "User-Agent": BROWSER_UA,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 # Chromium's accessibility snapshot uses different role names than Firefox (which
 # this pipeline was originally built around). Map Chromium roles onto the Firefox
@@ -117,16 +136,19 @@ def url_arg_handler(url):
         req.close()
         return base64_url
 
-    # Perform a HEAD preflight to weed out obviously unreachable endpoints before
-    # launching the browser (difference #6 retained). We allow auth and method
-    # errors (401/403/405/501) to pass through since content might still render.
+    # Best-effort HEAD preflight, purely advisory. The headless browser below is
+    # the real capability test (it renders JS and defeats many bot checks), so a
+    # failed/blocked preflight must NOT abort the crawl — WAFs routinely time out
+    # or 403 a bare HEAD for a page a real browser loads fine. We send browser
+    # headers to look legitimate and only log anomalies.
     try:
-        resp = requests.head(url, timeout=REQUESTS_TIMEOUT, allow_redirects=True)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-        raise RuntimeError(f"Preflight HEAD request failed for {url}: {e}") from e
-    status = resp.status_code
-    if status >= 400 and status not in {401, 403, 405, 501}:
-        raise RuntimeError(f"Preflight HEAD request for {url} returned HTTP {status}")
+        resp = requests.head(
+            url, headers=BROWSER_HEADERS, timeout=REQUESTS_TIMEOUT, allow_redirects=True
+        )
+        if resp.status_code >= 400 and resp.status_code not in {401, 403, 405, 501}:
+            logging.warning("Preflight HEAD for %s returned HTTP %s; continuing", url, resp.status_code)
+    except requests.exceptions.RequestException as e:
+        logging.warning("Preflight HEAD failed for %s (%s); letting the browser try", url, e)
     return url
 
 
@@ -146,9 +168,28 @@ def main(url, output, no_readability_js=False, pdf_output=None):
         # cross-browser tree, so SegmentExtractor consumes it unchanged. CSP is
         # bypassed via the browser context so Readability.js can always be
         # injected, and cert errors are ignored to tolerate deprecated TLS.
-        browser = p.chromium.launch(headless=True, args=["--ignore-certificate-errors"])
-        context = browser.new_context(bypass_csp=True, ignore_https_errors=True)
-        context.set_default_timeout(REQUESTS_TIMEOUT * 1000)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--ignore-certificate-errors",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        # Light stealth so a default headless fingerprint isn't flagged: a real UA
+        # + Accept-Language, a desktop locale/timezone, and a masked webdriver.
+        context = browser.new_context(
+            bypass_csp=True,
+            ignore_https_errors=True,
+            user_agent=BROWSER_UA,
+            locale="en-US",
+            timezone_id="America/New_York",
+            extra_http_headers={"Accept-Language": BROWSER_HEADERS["Accept-Language"]},
+        )
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+        context.set_default_timeout(NAV_TIMEOUT * 1000)
 
         def error_cleanup(msg):
             logging.error(msg)
@@ -159,7 +200,7 @@ def main(url, output, no_readability_js=False, pdf_output=None):
                 raise RuntimeError(f"html_crawler failure: {msg}")
 
         page = context.new_page()
-        page.set_default_timeout(REQUESTS_TIMEOUT * 1000)
+        page.set_default_timeout(NAV_TIMEOUT * 1000)
         page.set_viewport_size({"width": 1080, "height": 1920})
         logging.info("Navigating to %r", access_url)
 
