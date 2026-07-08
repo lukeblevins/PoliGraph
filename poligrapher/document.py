@@ -511,7 +511,15 @@ class SegmentExtractor:
                 parent = self.headings[-1][0] if self.headings else None
                 self.new_segment(SegmentType.TEXT, text, parent)
         else:
-            raise ValueError(f"Invalid role: {node['role']}")
+            # Unknown role (the accessibility vocabulary varies by browser and
+            # evolves over time, e.g. Chromium's "Iframe"). Rather than aborting
+            # the whole document, treat it as a transparent container and recurse
+            # so a single novel role can't fail an otherwise-good crawl.
+            logging.warning("Unhandled accessibility role %r; treating as container", node["role"])
+            for idx, child in enumerate(node.get("children", [])):
+                self.current_html_path.append(idx)
+                self.iterate(child)
+                self.current_html_path.pop()
 
     def fix_non_html_lists(self):
         """Turns non-HTML text-only bullets into listitem segments

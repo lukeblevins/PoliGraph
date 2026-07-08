@@ -40,6 +40,9 @@ _CHROMIUM_ROLE_MAP = {
     "image": "img",
     "LineBreak": "whitespace",
     "ListMarker": "list item marker",
+    # Firefox ignores embedded frames ("internal frame" is an ignored role).
+    "Iframe": "internal frame",
+    "IframePresentational": "internal frame",
 }
 
 
