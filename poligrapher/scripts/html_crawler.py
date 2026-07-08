@@ -24,6 +24,48 @@ READABILITY_JS_URL = (
 )
 REQUESTS_TIMEOUT = 10
 
+# Chromium's accessibility snapshot uses different role names than Firefox (which
+# this pipeline was originally built around). Map Chromium roles onto the Firefox
+# vocabulary that SegmentExtractor consumes so the exported tree is equivalent
+# regardless of browser. Roles not listed here already match or are handled.
+_CHROMIUM_ROLE_MAP = {
+    "WebArea": "document",
+    "RootWebArea": "document",
+    "generic": "section",
+    "none": "section",
+    "main": "section",
+    "complementary": "section",
+    "LabelText": "label",
+    "StaticText": "statictext",
+    "image": "img",
+    "LineBreak": "whitespace",
+    "ListMarker": "list item marker",
+}
+
+
+def normalize_accessibility_tree(node):
+    """Rewrite Chromium role names to the Firefox equivalents in place.
+
+    Chromium wraps every text node's runs in empty-named ``InlineTextBox``
+    children; the real text lives on the parent ``text`` node's ``name``. We drop
+    those children (and remove a now-empty ``children`` key) so the text node
+    becomes a leaf whose name SegmentExtractor will read.
+    """
+    if node is None:
+        return node
+    role = node.get("role")
+    if role in _CHROMIUM_ROLE_MAP:
+        node["role"] = _CHROMIUM_ROLE_MAP[role]
+
+    kept = [c for c in node.get("children", []) if c.get("role") != "InlineTextBox"]
+    if kept:
+        node["children"] = kept
+        for child in kept:
+            normalize_accessibility_tree(child)
+    else:
+        node.pop("children", None)
+    return node
+
 
 def get_readability_js():
     session = CachedSession("py_request_cache", backend="filesystem", use_temp=True)
@@ -95,26 +137,14 @@ def main(url, output, no_readability_js=False):
     )
     access_url = url_arg_handler(args.url)
 
-    firefox_configs = {
-        # Bypass CSP so we can always inject scripts
-        "security.csp.enable": False,
-        # Allow insecure TLS versions
-        "security.tls.version.min": 1,
-        "security.tls.version.enable-deprecated": True,
-        # Prevent some background traffic
-        "dom.serviceWorkers.enabled": False,
-        "network.websocket.max-connections": 0,
-        "media.autoplay.default": 5,
-        "media.peerconnection.enabled": False,
-        "privacy.trackingprotection.enabled": True,
-        "privacy.trackingprotection.lower_network_priority": True,
-        "privacy.trackingprotection.socialtracking.enabled": True,
-    }
-
     with sync_playwright() as p:
-        # Firefox generates simpler accessibility tree than chromium (upstream behavior)
-        browser = p.firefox.launch(firefox_user_prefs=firefox_configs, headless=True)
-        context = browser.new_context(bypass_csp=True)
+        # Chromium is used for crawling (Firefox fails to launch headless in some
+        # environments). Playwright's accessibility snapshot is a normalized,
+        # cross-browser tree, so SegmentExtractor consumes it unchanged. CSP is
+        # bypassed via the browser context so Readability.js can always be
+        # injected, and cert errors are ignored to tolerate deprecated TLS.
+        browser = p.chromium.launch(headless=True, args=["--ignore-certificate-errors"])
+        context = browser.new_context(bypass_csp=True, ignore_https_errors=True)
         context.set_default_timeout(REQUESTS_TIMEOUT * 1000)
 
         def error_cleanup(msg):
@@ -199,8 +229,9 @@ def main(url, output, no_readability_js=False):
         if re.search(r"(data|privacy)\s*(?:policy|notice)", soup_text, re.I) is None:
             error_cleanup("Not like a privacy policy")
 
-        # obtain the accessibility tree
+        # obtain the accessibility tree (normalized to the Firefox role vocabulary)
         snapshot = page.accessibility.snapshot(interesting_only=False)
+        snapshot = normalize_accessibility_tree(snapshot)
 
         output_dir = Path(args.output)
         output_dir.mkdir(exist_ok=True)
