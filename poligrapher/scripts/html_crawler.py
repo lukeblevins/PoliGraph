@@ -130,7 +130,7 @@ def url_arg_handler(url):
     return url
 
 
-def main(url, output, no_readability_js=False):
+def main(url, output, no_readability_js=False, pdf_output=None):
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
     )
@@ -182,6 +182,18 @@ def main(url, output, no_readability_js=False):
         for url in navigated_urls:
             if (status_code := url_status.get(url, 0)) >= 400:
                 error_cleanup(f"Got HTTP error {status_code}")
+
+        # Optionally capture the rendered page as a PDF from this same crawl, so a
+        # PDF-parsing analysis can reuse it without a second fetch. Done before the
+        # Readability mutation so the PDF reflects the actual page.
+        if pdf_output:
+            try:
+                page.emulate_media(media="print")
+                page.pdf(path=str(pdf_output))
+                page.emulate_media(media="screen")
+                logging.info("Captured page PDF to %r", pdf_output)
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Failed to capture page PDF: %s", exc)
 
         page.evaluate("window.stop()")
         if not args.no_readability_js:
