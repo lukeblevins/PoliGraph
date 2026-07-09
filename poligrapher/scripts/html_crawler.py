@@ -174,6 +174,9 @@ def main(url, output, no_readability_js=False, pdf_output=None):
                 "--ignore-certificate-errors",
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
+                # Some WAFs fingerprint the HTTP/2 handshake to reject bots
+                # (ERR_HTTP2_PROTOCOL_ERROR) while allowing HTTP/1.1; force h1.
+                "--disable-http2",
             ],
         )
         # Light stealth so a default headless fingerprint isn't flagged: a real UA
