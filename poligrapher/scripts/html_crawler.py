@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 import urllib.parse as urlparse
 
 import bs4
@@ -90,17 +91,51 @@ def normalize_accessibility_tree(node):
     return node
 
 
+def _read_local_readability():
+    """Return bundled Readability JS from READABILITY_JS_DIR, or None.
+
+    Baking these files into the image (and pointing this env var at them) avoids a
+    runtime fetch from raw.githubusercontent.com, which 429-rate-limits shared
+    datacenter IPs — a fetch that otherwise fails the crawl on every cold start.
+    """
+    d = os.getenv("READABILITY_JS_DIR")
+    if not d:
+        return None
+    try:
+        main = Path(d) / "Readability.js"
+        readerable = Path(d) / "Readability-readerable.js"
+        if main.is_file() and readerable.is_file():
+            return main.read_text() + "\n" + readerable.read_text()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("Could not read bundled Readability JS from %s: %s", d, e)
+    return None
+
+
 def get_readability_js():
+    local = _read_local_readability()
+    if local is not None:
+        return local
+    # Fallback: fetch from GitHub with browser headers + retry (raw.github 429s).
     session = CachedSession("py_request_cache", backend="filesystem", use_temp=True)
     js_code = []
-    res = session.get(f"{READABILITY_JS_URL}/Readability.js", timeout=REQUESTS_TIMEOUT)
-    res.raise_for_status()
-    js_code.append(res.text)
-    res = session.get(
-        f"{READABILITY_JS_URL}/Readability-readerable.js", timeout=REQUESTS_TIMEOUT
-    )
-    res.raise_for_status()
-    js_code.append(res.text)
+    for name in ("Readability.js", "Readability-readerable.js"):
+        last_exc = None
+        for i in range(3):
+            try:
+                res = session.get(
+                    f"{READABILITY_JS_URL}/{name}",
+                    timeout=REQUESTS_TIMEOUT,
+                    headers=BROWSER_HEADERS,
+                )
+                res.raise_for_status()
+                js_code.append(res.text)
+                last_exc = None
+                break
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                time.sleep(1.5 * (i + 1))
+        if last_exc is not None:
+            raise last_exc
     return "\n".join(js_code)
 
 
