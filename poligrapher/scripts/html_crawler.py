@@ -5,6 +5,7 @@ import argparse
 import base64
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import urllib.parse as urlparse
@@ -103,6 +104,24 @@ def get_readability_js():
     return "\n".join(js_code)
 
 
+def _proxy_from_env():
+    """Playwright ``proxy=`` config from CRAWL_PROXY env vars, or None.
+
+    Dormant unless CRAWL_PROXY is set, so the default deployment is unaffected.
+    A residential/ISP proxy here routes the crawl off the datacenter IP that
+    corporate WAFs block.
+    """
+    server = (os.getenv("CRAWL_PROXY") or "").strip()
+    if not server:
+        return None
+    cfg = {"server": server}
+    if os.getenv("CRAWL_PROXY_USERNAME"):
+        cfg["username"] = os.environ["CRAWL_PROXY_USERNAME"]
+    if os.getenv("CRAWL_PROXY_PASSWORD"):
+        cfg["password"] = os.environ["CRAWL_PROXY_PASSWORD"]
+    return cfg
+
+
 def url_arg_handler(url):
     parsed_url = urlparse.urlparse(url)
 
@@ -168,7 +187,7 @@ def main(url, output, no_readability_js=False, pdf_output=None):
         # cross-browser tree, so SegmentExtractor consumes it unchanged. CSP is
         # bypassed via the browser context so Readability.js can always be
         # injected, and cert errors are ignored to tolerate deprecated TLS.
-        browser = p.chromium.launch(
+        launch_kwargs = dict(
             headless=True,
             args=[
                 "--ignore-certificate-errors",
@@ -179,6 +198,10 @@ def main(url, output, no_readability_js=False, pdf_output=None):
                 "--disable-http2",
             ],
         )
+        proxy = _proxy_from_env()
+        if proxy:
+            launch_kwargs["proxy"] = proxy
+        browser = p.chromium.launch(**launch_kwargs)
         # Light stealth so a default headless fingerprint isn't flagged: a real UA
         # + Accept-Language, a desktop locale/timezone, and a masked webdriver.
         context = browser.new_context(
