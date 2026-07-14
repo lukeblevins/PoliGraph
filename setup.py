@@ -27,8 +27,9 @@ setup(
         "torch",
         "networkx",
         "pyyaml",
-        "playwright",
+        "playwright==1.45.0",
         "beautifulsoup4",
+        "lxml",
         "markdown",
         "pymupdf4llm",
         "pytest"
