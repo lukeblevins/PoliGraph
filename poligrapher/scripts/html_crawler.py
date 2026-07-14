@@ -14,6 +14,7 @@ import urllib.parse as urlparse
 import bs4
 import langdetect
 from playwright.sync_api import (
+    Error as PlaywrightError,
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
@@ -28,6 +29,11 @@ REQUESTS_TIMEOUT = 20
 # Browser navigation is slower than a plain request (JS, subresources) and some
 # corporate CDNs / archived pages are large, so give the page its own budget.
 NAV_TIMEOUT = 45
+POLICY_PATTERN = re.compile(r"(data|privacy)\s*(?:policy|notice|statement)", re.I)
+HTTP_FALLBACK_REMOVE_SELECTORS = (
+    "script, noscript, link, style, header, footer, nav, iframe, "
+    "img, picture, video, audio, source, object, embed"
+)
 
 # Present as a real desktop Chrome. Obvious bot User-Agents get blocked by
 # corporate WAFs, so both the preflight and the crawl browser use these.
@@ -157,6 +163,62 @@ def _proxy_from_env():
     return cfg
 
 
+def _content_profile(html):
+    soup = bs4.BeautifulSoup(html, "lxml")
+    text = soup.body.get_text(" ", strip=True) if soup.body else ""
+    try:
+        lang = langdetect.detect(text)
+    except langdetect.lang_detect_exception.LangDetectException:
+        lang = "UNKNOWN"
+    return text, lang
+
+
+def _valid_english_policy(text, lang):
+    return lang.lower().startswith("en") and POLICY_PATTERN.search(text) is not None
+
+
+def _get_http_fallback_html(url):
+    """Fetch and sanitize server HTML when Chromium has no usable body text."""
+    if urlparse.urlparse(url).scheme not in {"http", "https"}:
+        return None
+
+    try:
+        response = requests.get(
+            url,
+            headers=BROWSER_HEADERS,
+            timeout=REQUESTS_TIMEOUT,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        logging.warning("HTTP source fallback failed for %s: %s", url, exc)
+        return None
+
+    content_type = response.headers.get("content-type", "").lower()
+    if "html" not in content_type:
+        logging.warning("HTTP source fallback for %s was %r", url, content_type)
+        return None
+
+    soup = bs4.BeautifulSoup(response.text, "lxml")
+    for elem in soup.select(HTTP_FALLBACK_REMOVE_SELECTORS):
+        elem.decompose()
+    for elem in soup.select('[aria-hidden="true"]'):
+        elem["aria-hidden"] = "false"
+
+    html = str(soup)
+    text, lang = _content_profile(html)
+    if not _valid_english_policy(text, lang):
+        logging.warning(
+            "HTTP source fallback for %s was not a usable English privacy policy "
+            "(language=%s, text_chars=%d)",
+            url,
+            lang,
+            len(text),
+        )
+        return None
+    return html
+
+
 def url_arg_handler(url):
     parsed_url = urlparse.urlparse(url)
 
@@ -274,83 +336,122 @@ def main(url, output, no_readability_js=False, pdf_output=None):
             lambda f: f.parent_frame is None and navigated_urls.append(f.url),
         )
 
+        navigation_failed = False
         try:
-            page.goto(access_url)
-            page.wait_for_load_state("networkidle")
+            page.goto(access_url, wait_until="domcontentloaded")
         except PlaywrightTimeoutError:
-            logging.warning("Cannot reach networkidle but will continue")
+            navigation_failed = True
+            logging.warning(
+                "Chromium did not reach DOMContentLoaded; will try the HTTP source fallback"
+            )
+        except PlaywrightError as exc:
+            navigation_failed = True
+            logging.warning(
+                "Chromium navigation failed (%s); will try the HTTP source fallback",
+                exc,
+            )
+
+        if not navigation_failed:
+            try:
+                page.wait_for_load_state("networkidle")
+            except PlaywrightTimeoutError:
+                logging.warning("Cannot reach networkidle but will continue")
 
         # Check HTTP errors
         for url in navigated_urls:
             if (status_code := url_status.get(url, 0)) >= 400:
                 error_cleanup(f"Got HTTP error {status_code}")
 
-        # Optionally capture the rendered page as a PDF from this same crawl, so a
-        # PDF-parsing analysis can reuse it without a second fetch. Done before the
-        # Readability mutation so the PDF reflects the actual page.
+        readability_info = None
+        if navigation_failed:
+            fallback_html = _get_http_fallback_html(access_url)
+            if fallback_html is None:
+                error_cleanup(
+                    "Chromium navigation failed and the HTTP source fallback was unavailable"
+                )
+            page.close()
+            page = context.new_page()
+            page.set_default_timeout(NAV_TIMEOUT * 1000)
+            page.set_viewport_size({"width": 1080, "height": 1920})
+            page.set_content(fallback_html, wait_until="domcontentloaded")
+            cleaned_html = page.content()
+            readability_info = {"applied": False, "reason": "http_fallback"}
+            logging.warning("Using sanitized HTTP source after Chromium navigation failure")
+
+        if readability_info is None:
+            page.evaluate("window.stop()")
+            if not args.no_readability_js:
+                page.add_script_tag(content=get_readability_js())
+            readability_info = page.evaluate(
+                r"""(no_readability_js) => {
+                window.stop();
+
+                document.querySelectorAll('[aria-hidden=true]').forEach((x) => x.setAttribute("aria-hidden", false));
+
+                let article = {applied: false, reason: "disabled"};
+                if (!no_readability_js) {
+                    const documentClone = document.cloneNode(true);
+                    const parsedArticle = new Readability(documentClone).parse();
+
+                    if (parsedArticle) {
+                        article = parsedArticle;
+                        article.applied = false;
+
+                        if (isProbablyReaderable(document)) {
+                            documentClone.body.innerHTML = article.content;
+
+                            if (documentClone.body.innerText.search(/(data|privacy|cookie)\s*(policy|notice)/) >= 0) {
+                                document.body.innerHTML = article.content;
+                                article.applied = true;
+                            }
+                        }
+                    } else {
+                        article = {applied: false, reason: "parse_failed"};
+                    }
+                }
+
+                for (const elem of document.querySelectorAll('script, link, style, header, footer, nav'))
+                    elem.remove();
+
+                return article;
+            }""",
+                args.no_readability_js,
+            )
+            cleaned_html = page.content()
+
+        soup_text, lang = _content_profile(cleaned_html)
+        if not _valid_english_policy(soup_text, lang):
+            fallback_html = _get_http_fallback_html(access_url)
+            if fallback_html is not None:
+                logging.warning(
+                    "Rendered DOM was not a usable English privacy policy "
+                    "(language=%s, text_chars=%d); using sanitized HTTP source",
+                    lang,
+                    len(soup_text),
+                )
+                page.set_content(fallback_html, wait_until="domcontentloaded")
+                cleaned_html = page.content()
+                soup_text, lang = _content_profile(cleaned_html)
+                readability_info = {"applied": False, "reason": "http_fallback"}
+
+        if not lang.lower().startswith("en"):
+            error_cleanup(f"Content language {lang} isn't English")
+
+        if POLICY_PATTERN.search(soup_text) is None:
+            error_cleanup("Not like a privacy policy")
+
+        # Capture only after content validation. This avoids spending minutes
+        # printing an empty or interstitial page and ensures the PDF analysis sees
+        # the same policy content as the accessibility-tree analysis.
         if pdf_output:
             try:
+                logging.info("Capturing validated policy PDF to %r", pdf_output)
                 page.emulate_media(media="print")
                 page.pdf(path=str(pdf_output))
                 page.emulate_media(media="screen")
                 logging.info("Captured page PDF to %r", pdf_output)
             except Exception as exc:  # noqa: BLE001
                 logging.warning("Failed to capture page PDF: %s", exc)
-
-        page.evaluate("window.stop()")
-        if not args.no_readability_js:
-            page.add_script_tag(content=get_readability_js())
-        readability_info = page.evaluate(
-            r"""(no_readability_js) => {
-            window.stop();
-
-            document.querySelectorAll('[aria-hidden=true]').forEach((x) => x.setAttribute("aria-hidden", false));
-
-            let article = {applied: false, reason: "disabled"};
-            if (!no_readability_js) {
-                const documentClone = document.cloneNode(true);
-                const parsedArticle = new Readability(documentClone).parse();
-
-                if (parsedArticle) {
-                    article = parsedArticle;
-                    article.applied = false;
-
-                    if (isProbablyReaderable(document)) {
-                        documentClone.body.innerHTML = article.content;
-
-                        if (documentClone.body.innerText.search(/(data|privacy|cookie)\s*(policy|notice)/) >= 0) {
-                            document.body.innerHTML = article.content;
-                            article.applied = true;
-                        }
-                    }
-                } else {
-                    article = {applied: false, reason: "parse_failed"};
-                }
-            }
-
-            for (const elem of document.querySelectorAll('script, link, style, header, footer, nav'))
-                elem.remove();
-
-            return article;
-        }""",
-            args.no_readability_js,
-        )
-        cleaned_html = page.content()
-
-        # Check language
-        soup = bs4.BeautifulSoup(cleaned_html, "lxml")
-        soup_text = soup.body.text if soup.body else ""
-
-        try:
-            lang = langdetect.detect(soup_text)
-        except langdetect.lang_detect_exception.LangDetectException:
-            lang = "UNKNOWN"
-
-        if not lang.lower().startswith("en"):
-            error_cleanup(f"Content language {lang} isn't English")
-
-        if re.search(r"(data|privacy)\s*(?:policy|notice)", soup_text, re.I) is None:
-            error_cleanup("Not like a privacy policy")
 
         # obtain the accessibility tree (normalized to the Firefox role vocabulary)
         snapshot = page.accessibility.snapshot(interesting_only=False)
