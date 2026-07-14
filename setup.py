@@ -29,6 +29,7 @@ setup(
         "pyyaml",
         "playwright",
         "beautifulsoup4",
+        "lxml",
         "markdown",
         "pymupdf4llm",
         "pytest"
