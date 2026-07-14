@@ -304,21 +304,27 @@ def main(url, output, no_readability_js=False, pdf_output=None):
             r"""(no_readability_js) => {
             window.stop();
 
-            const documentClone = document.cloneNode(true);
-            const article = new Readability(documentClone).parse();
-            if (!article) {
-                throw new Error("Readability.js failed to parse the document");
-            }
-            article.applied = false;
-
             document.querySelectorAll('[aria-hidden=true]').forEach((x) => x.setAttribute("aria-hidden", false));
 
-            if (isProbablyReaderable(document) && !no_readability_js) {
-                documentClone.body.innerHTML = article.content;
+            let article = {applied: false, reason: "disabled"};
+            if (!no_readability_js) {
+                const documentClone = document.cloneNode(true);
+                const parsedArticle = new Readability(documentClone).parse();
 
-                if (documentClone.body.innerText.search(/(data|privacy|cookie)\s*(policy|notice)/) >= 0) {
-                    document.body.innerHTML = article.content;
-                    article.applied = true;
+                if (parsedArticle) {
+                    article = parsedArticle;
+                    article.applied = false;
+
+                    if (isProbablyReaderable(document)) {
+                        documentClone.body.innerHTML = article.content;
+
+                        if (documentClone.body.innerText.search(/(data|privacy|cookie)\s*(policy|notice)/) >= 0) {
+                            document.body.innerHTML = article.content;
+                            article.applied = true;
+                        }
+                    }
+                } else {
+                    article = {applied: false, reason: "parse_failed"};
                 }
             }
 
@@ -327,7 +333,7 @@ def main(url, output, no_readability_js=False, pdf_output=None):
 
             return article;
         }""",
-            [args.no_readability_js],
+            args.no_readability_js,
         )
         cleaned_html = page.content()
 
