@@ -8,3 +8,5 @@ sentence-transformers>=3,<6
 datasets>=3,<5
 scikit-learn>=1.6,<2
 pandas>=2.2,<4
+exrex>=0.12,<1
+inflect>=7,<8
