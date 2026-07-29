@@ -382,11 +382,11 @@ class CollectionAnnotator(BaseAnnotator):
                 data_tokens = args[data_idx]
 
                 if validate_type(entity_tokens, "ACTOR") and validate_type(data_tokens, "DATA"):
-                    self.logger.info("Collection statement (rule #%d): %r", matcher.id, sent.text)
+                    self.logger.debug("Collection statement (rule #%d): %r", matcher.id, sent.text)
 
                     for entity in entity_tokens:
                         for dtype in data_tokens:
-                            self.logger.info("Edge %s (%s): %r -> %r", relation, action, entity._.ent, dtype._.ent)
+                            self.logger.debug("Edge %s (%s): %r -> %r", relation, action, entity._.ent, dtype._.ent)
                             document.link(entity, dtype, relation)
 
         for doc in document.iter_docs():

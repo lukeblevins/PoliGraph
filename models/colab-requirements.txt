@@ -1,0 +1,10 @@
+# Match the runtime family used by poligrapher-app while allowing Colab's CUDA
+# build of PyTorch to remain in place.
+spacy==3.8.13
+spacy-transformers==1.4.0
+transformers==4.48.3
+setfit>=1.1,<2
+sentence-transformers>=3,<6
+datasets>=3,<5
+scikit-learn>=1.6,<2
+pandas>=2.2,<4

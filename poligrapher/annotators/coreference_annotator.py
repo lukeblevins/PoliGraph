@@ -35,9 +35,9 @@ class CoreferenceAnnotator(BaseAnnotator):
             return None
 
         def link_coref(coref, coref_main, reason):
-            self.logger.info("Sentence 1: %r", coref_main.sent.text)
-            self.logger.info("Sentence 2: %r", coref.sent.text)
-            self.logger.info("Edge COREF (%s): %r -> %r", reason, coref.text, coref_main.text)
+            self.logger.debug("Sentence 1: %r", coref_main.sent.text)
+            self.logger.debug("Sentence 2: %r", coref.sent.text)
+            self.logger.debug("Edge COREF (%s): %r -> %r", reason, coref.text, coref_main.text)
             document.link(coref.root, coref_main.root, "COREF")
 
         last_sentence_ents = []

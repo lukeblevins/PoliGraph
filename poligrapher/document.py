@@ -354,7 +354,9 @@ SECTION_ELEMENTS = frozenset(
         "region",
         # Table as section containers
         "table",
+        "LayoutTable",
         "row",
+        "LayoutTableRow",
         "rowgroup",
         # WAI-ARIA 1.2: consider adding "main", "complementary", "navigation", "form", "banner", "contentinfo"
     }
@@ -375,7 +377,9 @@ TEXT_CONTAINER_ELEMENTS = frozenset(
         "cell",
         "columnheader",
         "rowheader",  # Table cells and headers
+        "LayoutTableCell",
         "strong",
+        "code",
         # WAI-ARIA 1.2: consider adding "code", "mark", "strong", "emphasis", "time"
     }
 )
@@ -456,7 +460,7 @@ class SegmentExtractor:
 
     def new_segment(self, segment_type, text, parent):
         seg = DocumentSegment(len(self.segments), segment_type, self.tokenizer(text), parent)
-        logging.info("New segment: %r, Parent: %r", seg, parent)
+        logging.debug("New segment: %r, Parent: %r", seg, parent)
 
         self.segments.append(seg)
         self.parent_html_paths.append(self.current_html_path[:-1])
@@ -515,7 +519,7 @@ class SegmentExtractor:
             # evolves over time, e.g. Chromium's "Iframe"). Rather than aborting
             # the whole document, treat it as a transparent container and recurse
             # so a single novel role can't fail an otherwise-good crawl.
-            logging.warning("Unhandled accessibility role %r; treating as container", node["role"])
+            logging.debug("Unhandled accessibility role %r; treating as container", node["role"])
             for idx, child in enumerate(node.get("children", [])):
                 self.current_html_path.append(idx)
                 self.iterate(child)

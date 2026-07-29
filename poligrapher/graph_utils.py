@@ -74,7 +74,7 @@ def load_ontologies(data_ontology_path="", entity_info_json_path=""):
 
 
 def yaml_dump_graph(G: nx.Graph, stream=None):
-    graph_data = nx.node_link_data(G)
+    graph_data = nx.node_link_data(G, edges="links")
 
     for idx, link_dict in enumerate(graph_data['links']):
         new_link_dict = {
@@ -102,7 +102,7 @@ def yaml_dump_graph(G: nx.Graph, stream=None):
 
 def yaml_load_graph(stream) -> nx.Graph:
     graph_data = yaml.load(stream, Loader=yaml.CSafeLoader)
-    return nx.node_link_graph(graph_data)
+    return nx.node_link_graph(graph_data, edges="links")
 
 
 def _all_shortest_paths_wrap(*args, **kwargs):

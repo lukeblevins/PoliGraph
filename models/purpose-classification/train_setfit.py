@@ -2,12 +2,12 @@
 """Train the SetFit model for purpose classification"""
 
 import argparse
+import json
 
 import numpy as np
 import pandas as pd
 from datasets import Dataset
-from sentence_transformers.losses import CosineSimilarityLoss
-from setfit import SetFitModel, SetFitTrainer
+from setfit import SetFitModel, Trainer, TrainingArguments
 from sklearn.metrics import precision_recall_fscore_support
 
 PURPOSE_LABELS = [
@@ -24,6 +24,7 @@ def main():
     parser.add_argument("train_dataset", help="Training set")
     parser.add_argument("test_dataset", help="Testing set")
     parser.add_argument("output", help="Output model path")
+    parser.add_argument("--metrics-output", help="Write held-out metrics as JSON")
     args = parser.parse_args()
 
     train_dataset = Dataset.from_json(args.train_dataset, keep_in_memory=True)
@@ -36,24 +37,25 @@ def main():
         multi_target_strategy="one-vs-rest"
     )
 
-    # Create trainer
-    trainer = SetFitTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        loss_class=CosineSimilarityLoss,
+    training_args = TrainingArguments(
+        output_dir=f"{args.output}-checkpoints",
         batch_size=16,
         num_iterations=20,
         num_epochs=2,
+        use_amp=True,
+        report_to="none",
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
     )
 
     # Train and evaluate!
     trainer.train()
-    metrics = trainer.evaluate()
-    print(metrics)
-
     predictions = model(test_dataset["text"])
-    y_pred = predictions.numpy()
+    y_pred = predictions.cpu().numpy() if hasattr(predictions, "cpu") else np.asarray(predictions)
     y_true = np.array(test_dataset["label"])
     precisions, recalls, fscores, supports = precision_recall_fscore_support(y_true, y_pred)
 
@@ -65,6 +67,16 @@ def main():
         "support": supports,
     })
     print(statistic)
+    metrics = {
+        "labels": statistic.to_dict(orient="records"),
+        "macro_precision": float(np.mean(precisions)),
+        "macro_recall": float(np.mean(recalls)),
+        "macro_f1": float(np.mean(fscores)),
+    }
+    print(json.dumps(metrics, indent=2))
+    if args.metrics_output:
+        with open(args.metrics_output, "w", encoding="utf-8") as fout:
+            json.dump(metrics, fout, indent=2)
 
     model.save_pretrained(args.output, safe_serialization=True)
 

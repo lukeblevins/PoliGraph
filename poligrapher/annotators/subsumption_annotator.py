@@ -407,13 +407,13 @@ class SubsumptionAnnotator(BaseAnnotator):
             if upper_ent is None:
                 continue
 
-            self.logger.info("Rule %s matches %r", rule_name, sentence.text)
-            self.logger.info("Matched upper token: %r", upper_ent.text)
+            self.logger.debug("Rule %s matches %r", rule_name, sentence.text)
+            self.logger.debug("Matched upper token: %r", upper_ent.text)
 
             for child_ent in search_child_ent(lower_token):
                 if ent_type_is_compatible(upper_ent, child_ent):
                     document.link(upper_ent.root, child_ent.root, "SUBSUM")
-                    self.logger.info("Edge SUBSUM: %r -> %r", upper_ent.text, child_ent.text)
+                    self.logger.debug("Edge SUBSUM: %r -> %r", upper_ent.text, child_ent.text)
 
     def annotate_first_party_appos(self, document, doc):
         """Find synonyms to "we" -- the first party"""
