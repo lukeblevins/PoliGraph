@@ -22,7 +22,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download extra-data-v1 \
+          gh release download extra-data-v2 \
             --repo lukeblevins/PoliGraph \
             --pattern "poligrapher-extra-data.tar.gz" \
             --dir /tmp

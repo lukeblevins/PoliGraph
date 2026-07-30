@@ -7,7 +7,7 @@ import requests
 
 RELEASE_URL = (
     "https://github.com/lukeblevins/PoliGraph/releases/download"
-    "/extra-data-v1/poligrapher-extra-data.tar.gz"
+    "/extra-data-v2/poligrapher-extra-data.tar.gz"
 )
 
 REQUIRED = {"entity_info.json", "named_entity_recognition", "purpose_classification"}
