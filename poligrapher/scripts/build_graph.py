@@ -47,6 +47,7 @@ class GraphBuilder:
 
         normalized_terms_map = {}
         G_final = nx.MultiDiGraph()
+        invalid_subsumptions = set()
 
         def build_phrase_map_from_ent_labels():
             """Step 1: Populate token_type_map using NER labels."""
@@ -99,7 +100,7 @@ class GraphBuilder:
 
             for (text, labels), predictions in zip(purpose_text_to_labels.items(),
                                                    self.purpose_classifier(list(purpose_text_to_labels))):
-                logging.info("Purpose %r -> %s", text, predictions)
+                logging.debug("Purpose %r -> %s", text, predictions)
                 labels.extend(predictions)
 
             for data_type_src, purpose_text_list in data_type_purposes.items():
@@ -321,7 +322,7 @@ class GraphBuilder:
                 G_final.add_nodes_from(terms, type=token_type)
 
                 normalized_terms_map[src] = sorted(terms, reverse=True)  # Stablize set order for reproducibility
-                logging.info("Phrase %r (%s) -> %r", phrase.text, token_type, ", ".join(normalized_terms_map[src]))
+                logging.debug("Phrase %r (%s) -> %r", phrase.text, token_type, ", ".join(normalized_terms_map[src]))
 
         def merge_subsum_graph():
             """Step 7: Populate SUBSUM edges in G_final from G_subsum."""
@@ -341,7 +342,7 @@ class GraphBuilder:
                     # Some sentences lead to subsumption relationship between 1st/3rd parties.
                     # Workaround: Simply ignore all subsumption edges to "we"
                     if n2 == "we":
-                        logging.warning("Invalid subsumption: %r -> %r", n1, n2)
+                        invalid_subsumptions.add((n1, n2))
                         continue
 
                     if not G_final.has_edge(n1, n2, key=relationship):
@@ -372,6 +373,18 @@ class GraphBuilder:
 
         def finalize():
             """Step 9: Finalize"""
+
+            if invalid_subsumptions:
+                examples = ", ".join(
+                    f"{source!r} -> {target!r}"
+                    for source, target in sorted(invalid_subsumptions)[:5]
+                )
+                logging.warning(
+                    "Discarded %d invalid subsumption relation(s) targeting the "
+                    "first party; examples: %s",
+                    len(invalid_subsumptions),
+                    examples,
+                )
 
             # Clean-up zero degree nodes
             for node in list(G_final.nodes()):

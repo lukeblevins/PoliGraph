@@ -191,8 +191,8 @@ class PurposeAnnotator(BaseAnnotator):
             if not self.validator(purpose_part):
                 continue
 
-            self.logger.info("Rule %s matches %r", rule_name, sentence.text)
-            self.logger.info("Purpose phrase: %r", purpose_part.text)
+            self.logger.debug("Rule %s matches %r", rule_name, sentence.text)
+            self.logger.debug("Purpose phrase: %r", purpose_part.text)
 
             # Select data types under the verb's subtree
             associate_dtypes = []
@@ -201,7 +201,7 @@ class PurposeAnnotator(BaseAnnotator):
                     associate_dtypes.append(token)
 
             if len(associate_dtypes) > 0:
-                self.logger.info("Linkable data types: %r", associate_dtypes)
+                self.logger.debug("Linkable data types: %r", associate_dtypes)
 
                 for dtype in associate_dtypes:
                     document.link(dtype, purpose_part.root, "PURPOSE")
